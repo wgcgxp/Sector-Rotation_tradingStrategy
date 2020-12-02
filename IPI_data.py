@@ -89,14 +89,12 @@ class ImmediateData(FileManagement):
                     sub_df['stockCode'] = sub_df['stockCode'].apply(lambda x: x.split(".")[0])
                     new_df = pd.merge(new_df, sub_df, on=['stockCode', 'stockName', 'year', 'reportPeriod'], how="left")
         new_df = pd.merge(new_df, self.dataframes_Used[baseDfName], on=['stockCode', 'stockName'], how='right')
-        # new_df = new_df.rename(columns={'证券代码':'stockCode', '证券简称':'stockName'})
         self.dataframes_Used[storeName] = new_df
 
     def label_NaN_value(self):
         for i in self.IPI_data_cate:
             data = self.dataframes_Used[i]
             colnames = data.columns.values
-            print('colnames:', colnames)
             colnames = colnames[4:-1]
             for c in colnames:
                 data[c + '_checkNaN'] = data[c].apply(lambda x: np.isnan(x) * 1.0)
@@ -123,11 +121,3 @@ class ImmediateData(FileManagement):
                 self.two_kinds_data(self.IPI_data_cate[i], i, baseDfName)
         self.label_NaN_value()
         self.combine_all_df()
-        # print("======================== IPI Result ========================")
-        # print(self.dataframes_Used['IPI'])
-        # print('columns:\n', self.dataframes_Used['IPI'].columns.values)
-
-        # from pandas import ExcelWriter
-        # write = ExcelWriter('IPI.xlsx')
-        # self.dataframes_Used['IPI'].to_excel(write, 'data', index=False)
-        # write.save()

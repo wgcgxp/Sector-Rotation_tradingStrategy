@@ -9,7 +9,6 @@ import os
 if __name__=="__main__":
     file_path = "../DATA/"
     files = os.listdir(file_path)
-    print('files:\n', files, '\n')
 
     # Initialize base class
     fm: FileManagement = FileManagement(file_path)

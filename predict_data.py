@@ -13,7 +13,6 @@ class PredictData(FileManagement):
         self.predict_data_cate = fmClass.predict_data_cate
         self.temp_Data = {} # Store the raw data read from different excels
         self.raw_analyze_data = {}
-        self.close = fmClass.close
 
     def dataframe_transform(self):
         '''
@@ -42,8 +41,6 @@ class PredictData(FileManagement):
         '''
         self.dataframe_transform() # Transform the data before dealing with them.
         for i in self.predict_data_cate:
-            # print(i)
-            # print("length of the dataframe:", len(self.temp_Data[self.predict_data_cate[i][0]]))
             if len(self.predict_data_cate[i])==2:
                 fy1_data = self.temp_Data[self.predict_data_cate[i][0]] if "FY1" in self.predict_data_cate[i][0] else self.temp_Data[self.predict_data_cate[i][1]]
                 fy2_data = self.temp_Data[self.predict_data_cate[i][0]] if "FY2" in self.predict_data_cate[i][0] else self.temp_Data[self.predict_data_cate[i][1]]
@@ -118,18 +115,9 @@ class PredictData(FileManagement):
 
 
     def run_predict(self):
-        # print("predict_data_cate:\n", self.predict_data_cate)
-        # print(self.dataframes)
         self.data_deal()
-        self.close = self.temp_Data[self.predict_data_cate['close'][0]]
-        print("self.close:\n", self.close)
         # Calculate certain indicators that does not provide by Wind
         self.derive_indicators('EPS', 'PE')
         self.calculate_PE_G()
         self.derive_indicators('BPS', 'PB')
         self.dataframe_combine()
-
-        # from pandas import ExcelWriter
-        # write = ExcelWriter('predict.xlsx')
-        # self.dataframes_Used['predict'].to_excel(write, 'data', index=False)
-        # write.save()

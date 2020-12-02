@@ -15,7 +15,6 @@ class FileManagement:
         self.ROEdata = {}
         self.close = pd.DataFrame()
         self.yearPeriod = ["20" + "{:0>2}".format(i) for i in range(8, 21)]
-        # self.yearPeriod =['2019', '2020']
 
 
     def read_files(self, file_name, dataframeName, multi=False):
@@ -35,8 +34,26 @@ class FileManagement:
                 subdata.columns = newcolname
                 subdata['stockCode'] = subdata['stockCode'].apply(lambda x: x.split(".")[0])
                 data.append(subdata)
+            if dataframeName=="close":
+                base = data[0]
+                base['stockCode'] = base['stockCode'].apply(lambda x: x.split(".")[0])
+                for df in data[1:]:
+                    df['stockCode'] = base['stockCode'].apply(lambda x: x.split(".")[0])
+                    base = pd.merge(base, df, on=['stockCode', 'stockName'], how='inner')
+                self.close = base
+                self.close_data_manage()
         self.dataframes[dataframeName] = data
         self.file_names.append(dataframeName)
+
+    def close_data_manage(self):
+        base = self.dataframes['baseCompInfo'][["证券代码", "证券简称", "行业名称"]]
+        base.columns = ["stockCode", "stockName", "industry"]
+        close = self.close
+        close = pd.merge(base, close, on=['stockCode', 'stockName'], how='inner')
+        closecol = list(close.columns.values)
+        closecol = [closecol[:3] + [str(i.year) + "-" + "{:0>2}".format(i.month) for i in closecol[3:]]][0]
+        close.columns = closecol
+        self.close = close
 
     def column_name_baseDF(self, dataframeName):
         dfColumn = self.dataframes[dataframeName].columns.values
@@ -153,7 +170,6 @@ class BaseData(FileManagement):
 
     def explore_data(self, dataframeName):
         colname = self.columnName[dataframeName]
-        print('colname:', colname)
         data = self.dataframes[dataframeName]
         data = data[data['股票种类'] == 'A股'].reset_index(drop=True)
         data['成立日期'] = data['成立日期'][data['成立日期']!=np.NaN].apply(lambda i: datetime.date(datetime.strptime(str(int(i)), "%Y%m%d")))

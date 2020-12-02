@@ -36,17 +36,13 @@ class PeriodData(FileManagement):
         new_df = new_df[new_df_cols]
         # Check the null value
         new_df[category + '_checkNaN'] = new_df[category].apply(lambda x: np.isnan(x) * 1.0)
-        # Empty_val_dist = pd.pivot_table(new_df[['stockCode', category + '_checkNaN']], values=category + '_checkNaN', index='stockCode', aggfunc=np.sum)
-        # print('new_df:\n', new_df)
         self.dataframes_Used[dataframeName] = new_df
 
     def duplicatedVar_data_transfer(self, dataframeName, baseDfName):
         baseData = self.dataframes_Used[baseDfName][['stockCode', 'industry', 'stockName']]
-        # print(self.columnName[dataframeName])
         data = self.dataframes[dataframeName]
         data['证券代码'] = data['证券代码'].apply(lambda x: x.split('.')[0])
         self.dataframes[dataframeName] = data
-        # print("data:\n", data)
 
         # To deal with the column name
         datacols = self.columnName[dataframeName]
@@ -72,7 +68,6 @@ class PeriodData(FileManagement):
                 new_df = pd.merge(new_df, df, on=['证券代码', '证券简称', 'year', 'reportPeriod'], how='right')
             # Check the null value
             new_df[c + '_checkNaN'] = new_df[c].apply(lambda x: np.isnan(x) * 1.0)
-            # Empty_val_dist = pd.pivot_table(new_df[['证券代码', c + '_checkNaN']], values=c + '_checkNaN', index='证券代码', aggfunc=np.sum)
         new_df = new_df.rename(columns={'证券代码':'stockCode', '证券简称':'stockName'})
         new_df = pd.merge(new_df, baseData, on=['stockCode', 'stockName'], how='right')
         self.dataframes_Used[dataframeName] = new_df
@@ -94,14 +89,3 @@ class PeriodData(FileManagement):
 
     def run_ipi(self):
         self.combine_all_df()
-        # print("======================== PPI Result ========================")
-        # print(self.dataframes_Used['PPI'])
-        # print('columns:\n', self.dataframes_Used['PPI'].columns.values)
-        # print(self.dataframes_Used['PPI'][['year', 'reportPeriod']])
-        # print('year:', set(list(self.dataframes_Used['PPI']['year'])))
-        # print('reportPeriod:', set(list(self.dataframes_Used['PPI']['reportPeriod'])))
-
-        # from pandas import ExcelWriter
-        # write = ExcelWriter('PPI.xlsx')
-        # self.dataframes_Used['PPI'].to_excel(write, 'data', index=False)
-        # write.save()

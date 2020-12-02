@@ -29,6 +29,8 @@ class DataCleaningPro(FileManagement):
         self.industry_datasets = {}
         self.buy_sell_signal = {}
         self.performance_LongShort = {} # Store the dataframe that long/short the industry
+        self.indicatorRes = {}
+        self.indicatorScore = {}
 
         self.PPI_ind = colnames.PPI_COLNAMES.value
         self.IPI_ind = colnames.IPI_COLNAMES.value
@@ -47,27 +49,6 @@ class DataCleaningPro(FileManagement):
             "2011": 0.0079,
             "2010": 0.0096
         }
-
-        # self.dataframe = {} # Temperary variables, need to be deleted
-
-    # def read_data(self):
-    #     path = "../tmp_data/"
-    #     # files = os.listdir(path)
-    #     # files = [i for i in files if ".xlsx" in i]
-    #
-    #     files = ['predict.xlsx', 'PPI.xlsx', 'IPI.xlsx'] # temporary
-    #     for i in files:
-    #         print(i)
-    #         data = pd.read_excel(path + i, encoding='utf-8', dtype={'stockCode': str, 'year': str})
-    #         data = self.rename_df_ENG(data, i.split(".")[0])
-    #
-    #         if i.split(".")[0]!="predict":
-    #             data['reportPeriod'] = data['reportPeriod'].apply(self.change_name)
-    #             data = data.sort_values(by=['stockCode', 'year', 'reportPeriod'], ascending=True).reset_index(drop=True)
-    #             self.dataframe[i.split('.')[0]] = data # ===== Remember to change =====
-    #         else:
-    #             data = data.sort_values(by=['stockCode', "year", "month"], ascending=True).reset_index(drop=True)
-    #             self.dataframe[i.split('.')[0]] = data
 
     def rename_df_ENG(self, df, cate):
         if cate == "PPI":
@@ -299,7 +280,7 @@ class DataCleaningPro(FileManagement):
         data = data[newcols]
         self.secondary_dataframes[dataframeName] = data
 
-    def weighted_data(self):
+    def weighted_close(self):
         # Weighted data
         years = list(self.weightInfo.keys())
         years.sort()
@@ -309,11 +290,22 @@ class DataCleaningPro(FileManagement):
             weights.append(w)
         weights = pd.DataFrame(pd.concat(weights, axis=1, join="inner")).reset_index()
 
-        stocks = list(weights['stockCode'])
-        for s in stocks:
-            stockWeight = np.array(weights.iloc[:, 3:][weights['stockCode']==s])[0]
-            stockWeight_ind = stockWeight==0
-
+        close = self.close
+        weights = weights.sort_values(by=['stockCode', 'industry']).fillna(0)
+        close = close.sort_values(by=['stockCode', 'industry']).fillna(0)
+        industry = list(set(weights['industry']))
+        datelist = list(weights.columns.values)[3:]
+        indClose = []
+        for i in industry:
+            subClose = [i]
+            for d in datelist:
+                closeArr = np.array(close[d][close['industry']==i]).reshape(1, -1)
+                weightArr = np.array(weights[d][weights['industry']==i]).reshape(-1, 1)
+                subClose.append(np.dot(closeArr, weightArr)[0][0])
+            indClose.append(pd.DataFrame(subClose).T)
+        indClose = pd.concat(indClose)
+        indClose.columns = ['industry'] + datelist
+        self.close = indClose
 
     def count_nan(self, dataframeName):
         data = self.dataframes_Used[dataframeName]
@@ -331,7 +323,6 @@ class DataCleaningPro(FileManagement):
         statNaN_df['NaN_percnt'] = statNaN_df['NaNcols'].apply(lambda x: x / (len(statNaN_df.columns.values)-2)) # Counted the missing value for each of the stocks
         tobeDelete = list(statNaN_df[statNaN_df['NaN_percnt'] > 0.3]['stockCode']) # Delete those missing stocks that have missing values over 30% in all of the features
         self.tobeDelete_objs[dataframeName] = [tobeDelete, statNaN_df]
-
 
     def change_name(self, val):
         '''
@@ -509,6 +500,8 @@ class DataCleaningPro(FileManagement):
         baseCol = TTM_indicator_calculation.weight_cols.value
         newCol = ['industry', 'ym']
 
+        self.weighted_close()
+
         for s in sheetname:
             data = dfDict[s]
             data["ym"] = data.apply(lambda x: str(x['year']) + "-" + "{:0>2}".format(x['reportPeriod']), axis=1)
@@ -559,6 +552,7 @@ class DataCleaningPro(FileManagement):
         }
 
         write = ExcelWriter("result.xlsx")
+        idx_ind_score = []
         for s in self.cate:
             data = self.buy_sell_signal[s]
 
@@ -570,6 +564,7 @@ class DataCleaningPro(FileManagement):
             indicatorRes = {}
             for c in col:
                 indRes = {}
+                indScore = []
                 for i in industry:
                     subdf = data[["industry", "ym", c + "_buy", c + "_sell"]][data['industry']==i]
                     # Buy decision - money cost
@@ -608,16 +603,27 @@ class DataCleaningPro(FileManagement):
                     closeP = subdf[c+'_close']
                     rf = np.array([self.libor[i] for i in self.libor]).mean()
                     indRes[i] = self.performance_calcul(tradeRec, datelist, closeP, rf)
+                    indScore.append(subdf[['industry', 'ym', c]])
 
                 indRes = pd.DataFrame(indRes)
                 # Aggregate all the ratios and average them to get a ratio table represents the performance of each indicator.
                 indRes['avg'] = indRes.apply(lambda x: np.nanmean(x), axis=1)
                 indicatorRes[c] = list(indRes['avg'])
 
+                indScore = pd.concat(indScore).set_index(['industry', 'ym'])
+                idx_ind_score.append(indScore)
+
             indicatorRes = pd.DataFrame(indicatorRes).T.reset_index()
             indicatorRes.columns = ['indicator', 'AnnualProfRate', 'AnnualVol', 'SharpeRatio', 'MaxDrawdown', 'WinLossRatio']
             indicatorRes.to_excel(write, s, index=False)
         if writeExcel: write.save()
+
+        idx_ind_score = pd.concat(idx_ind_score, axis=1)
+        idx_ind_score = idx_ind_score.reset_index()
+        write = ExcelWriter("industry_score.xlsx")
+        for dt in set(list(idx_ind_score['ym'])):
+            idx_ind_score.to_excel(write, dt, index=False)
+        write.save()
 
     def performance_calcul(self, tradeRec, datelist, close, rf):
         '''
@@ -645,16 +651,16 @@ class DataCleaningPro(FileManagement):
             i += 2
 
         if len(Prof['annualProf'])==0: return [np.NaN] * 5
-        # Annual Rate of Return
+        # 1. Annual Rate of Return
         annualProfMean = round(sum(Prof['annualProf']) / len(Prof['annualProf']), 3)
-        # Annual Rate of Volatility
+        # 2. Annual Rate of Volatility
         profU = sum(np.square(np.array(Prof['annualProf']) - annualProfMean)) / (len(Prof['annualProf']) - 1) if len(Prof['annualProf']) > 1 else np.NaN
         yearVol = round(np.sqrt(profU), 3) if len(Prof['annualProf']) > 1 else np.NaN
-        # Sharpe Ratio
+        # 3. Sharpe Ratio
         SharpeR = (annualProfMean - rf) / yearVol if len(Prof['annualProf']) > 1 else np.NaN
-        # Win Loss Ratio
+        # 4. Win Loss Ratio
         wlr = round(Prof['win'] * 1.0 / Prof['trade'], 3)
-        # Max Drawdown
+        # 5. Max Drawdown
         rec = False
         closeTradeP = []
         ind = 1
@@ -679,7 +685,6 @@ class DataCleaningPro(FileManagement):
         return res
 
     def run_dataClean(self):
-        # self.read_data()
         self.IPI_data_calcul()
         self.IPI_nan_deal()
         self.PPI_data_calcul()
