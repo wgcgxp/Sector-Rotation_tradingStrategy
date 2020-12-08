@@ -137,11 +137,12 @@ class FileManagement:
             year = str(cols[-1].year)
             self.ROEdata[year] = subROE
 
-    def datetime_func(self, s, e):
+    def datetime_func(self, s, e, period=1):
         '''
         Iterate a datetime series, date delta is month. Format: yyyy-mm
         :param s: start date, format: yyyy-mm
         :param e: end date, format: yyyy-mm
+        :param period: The date diff between each period, 1 equals to 1 month.
         :return: A list of datetime, string style.
         '''
         res = [s]
@@ -158,7 +159,14 @@ class FileManagement:
                 else:
                     s = s + timedelta(days=28)
             res.append(s.strftime("%Y-%m"))
-        return res
+        if period==1:
+            return res
+        else:
+            res2 = []
+            for i in range(len(res)):
+                if i % 3 == 0:
+                    res2.append(res[i])
+            return res2
 
 
 class BaseData(FileManagement):

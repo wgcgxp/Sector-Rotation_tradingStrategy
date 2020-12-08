@@ -10,7 +10,7 @@ if __name__=="__main__":
     file_path = "../DATA/"
     files = os.listdir(file_path)
 
-    # Initialize base class
+    # # Initialize base class
     fm: FileManagement = FileManagement(file_path)
     fm.initialized_data("basicInfo.xlsx", "baseCompInfo", "b")
     # Initialize base company infomation and needed stocks (companies)
@@ -19,6 +19,7 @@ if __name__=="__main__":
 
 
     # Periodic Performance Indicators Data
+    print("PPI Data")
     # With single feature
     fm.initialized_data("operationAbility.xlsx", "OperationAbility", "p")
     fm.initialized_data("assetStructure.xlsx", "AssetStructure", "p")
@@ -38,20 +39,22 @@ if __name__=="__main__":
 
 
     # Immediate Performance Indicators Data
+    print("IPI Data")
     ipi = ImmediateData(fm)
     target_folders = [i for i in files if "_growth" in i]
     for t in target_folders:
         tar_file_path = file_path + t + "/"
-        print('tar_file_path:', tar_file_path)
+        # print('tar_file_path:', tar_file_path)
         subfiles = os.listdir(tar_file_path)
         for s in subfiles:
             if ".xlsx" in s and "~$" not in s:
-                print('    ', s)
+                # print('    ', s)
                 fm.initialized_data(t + "/" + s, s.split('.')[0], "p")
                 fm.store_yoy_growth_dataInfo(t + "/" + s, s.split('.')[0])
     ipi.run_ipi("baseCompInfo")
 
     # Prediction data
+    print("Predict Data")
     pdd = PredictData(fm)
     tar_file_path = file_path + 'yuce/std/'
     subfiles = os.listdir(tar_file_path)
@@ -65,5 +68,6 @@ if __name__=="__main__":
 
     fm.initialized_data("Industry/ROE.xlsx", "ROE", base_period="p", multi=True)
     fm.OREdf() # Read the ROE data
+    print("Data clean process")
     dcp = DataCleaningPro(fm)
-    dcp.run_dataClean()
+    dcp.run_dataClean('2016-01', '2020-09')

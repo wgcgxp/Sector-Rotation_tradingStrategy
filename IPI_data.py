@@ -45,7 +45,6 @@ class ImmediateData(FileManagement):
             else:
                 new_df = df
         new_df = pd.merge(new_df, self.dataframes_Used[baseDfName], on=['stockCode', 'stockName'], how='right')
-        # new_df = new_df.rename(columns={'证券代码':'stockCode', '证券简称':'stockName'})
         self.dataframes_Used[storeName] = new_df
 
     def three_kinds_data(self, dataframeNameList, storeName, baseDfName):

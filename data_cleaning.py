@@ -1,11 +1,10 @@
 import pandas as pd
 from pandas import ExcelWriter
 import numpy as np
-from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from base_classes import FileManagement
-from random import randint
-import os
 from rename_info import colnames, TTM_indicator_calculation
 pd.set_option('mode.chained_assignment', None)
 
@@ -28,13 +27,21 @@ class DataCleaningPro(FileManagement):
         self.industry_datasets_raw = {}
         self.industry_datasets = {}
         self.buy_sell_signal = {}
-        self.performance_LongShort = {} # Store the dataframe that long/short the industry
-        self.indicatorRes = {}
-        self.indicatorScore = {}
+        self.industry_indicators_score = {}
+        self.complex_rawdata = pd.DataFrame()
+
+        # Performance
+        self.portfolio = {}
+        self.indicator_performance = {}
+        self.indicator_picker = pd.DataFrame()
+        self.complex_ind = pd.DataFrame()
 
         self.PPI_ind = colnames.PPI_COLNAMES.value
         self.IPI_ind = colnames.IPI_COLNAMES.value
         self.end_date = "2020-10"
+        self.startyear = 2009
+        self.endyear = 2020
+        self.endmonth = 10
         self.period = [str(i) for i in range(2010, 2021)]
         self.libor = {
             "2020": 0.0097,
@@ -47,7 +54,8 @@ class DataCleaningPro(FileManagement):
             "2013": 0.0069,
             "2012": 0.0113,
             "2011": 0.0079,
-            "2010": 0.0096
+            "2010": 0.0096,
+            "2009": 0.0033
         }
 
     def rename_df_ENG(self, df, cate):
@@ -293,6 +301,7 @@ class DataCleaningPro(FileManagement):
         close = self.close
         weights = weights.sort_values(by=['stockCode', 'industry']).fillna(0)
         close = close.sort_values(by=['stockCode', 'industry']).fillna(0)
+
         industry = list(set(weights['industry']))
         datelist = list(weights.columns.values)[3:]
         indClose = []
@@ -305,7 +314,7 @@ class DataCleaningPro(FileManagement):
             indClose.append(pd.DataFrame(subClose).T)
         indClose = pd.concat(indClose)
         indClose.columns = ['industry'] + datelist
-        self.close = indClose
+        self.close = indClose # The close index of the trading day at the end of each month
 
     def count_nan(self, dataframeName):
         data = self.dataframes_Used[dataframeName]
@@ -484,6 +493,10 @@ class DataCleaningPro(FileManagement):
         self.weightInfo[year] = pd.concat(res).fillna(0)
 
     def industry_indicators(self):
+        '''
+        To weighted the stocks indicators within each industry.
+        :return: No return, the dataset is stored in the variable. The dataset is grouped by according to industry, date ('yyyy-mm')
+        '''
         # Temporary
         sheetname = ["IPI", "PPI", "predict"]
         dfDict = {}
@@ -512,7 +525,7 @@ class DataCleaningPro(FileManagement):
             # Multiply the weight to each stock indicators group by industry
             newdata = []
             for ym in yearmon:
-                if int(ym[:4]) == 2019 or (int(ym[:4]) == 2020 and int(ym[5:]) < 10): # Temporary
+                if (int(ym[:4]) >= self.startyear and int(ym[:4]) < self.endyear) or (int(ym[:4]) == self.endyear and int(ym[5:]) < self.endmonth):
                     cal_df = data[baseCol + col + ['ym']][data['ym']==ym]
                     weight_df = weight[baseCol + [ym]]
                     cal_df = pd.merge(cal_df, weight_df, on=baseCol, how="inner")
@@ -530,9 +543,16 @@ class DataCleaningPro(FileManagement):
             self.industry_datasets[s] = industry_data
 
     def buysell_indicator(self, thres):
+        '''
+        To change the industry score into long short signals.
+        :param thres: The threshold to control on what level the signal is long / short.
+        :return: No return, the data is stored in two datasets. The score and the long short signal datasets.
+        '''
         for s in self.cate:
             data = self.industry_datasets[s]
-            for c in data.columns.values[2:]:
+            indicatorsScoreCols = data.columns.values[2:]
+            longShortCols = []
+            for c in indicatorsScoreCols:
                 avg = data[["industry", c]].groupby(by=["industry"]).mean().reset_index().rename(columns={c: "avg"})
                 data = pd.merge(data, avg, on="industry", how="left")
                 # The buy / sell signal occurs when the indicator is larger than the enlarge the average / reduce the average
@@ -540,10 +560,19 @@ class DataCleaningPro(FileManagement):
                 data[c + "_buy"] = data.apply(lambda x: (x[c] < x["avg"] * (1 - thres)) * 1, axis=1)
                 data[c + "_sell"] = data.apply(lambda x: (x[c] > x["avg"] * (1 + thres)) * 1, axis=1)
                 del data['avg']
-                del data[c]
-            self.buy_sell_signal[s] = data
+                longShortCols.append(c + "_buy")
+                longShortCols.append(c + "_sell")
+            longShortCols = list(data.columns.values[:2]) + longShortCols
+            indicatorsScoreCols = list(data.columns.values[:2]) + list(indicatorsScoreCols)
+            self.buy_sell_signal[s] = data[longShortCols]
+            self.industry_indicators_score[s] = data[indicatorsScoreCols]
 
     def single_buysell_perf(self, writeExcel=False):
+        '''
+        To turn the long short signals into investing period. And measure the portfolio value according to the close index of the industry.
+        :param writeExcel: Whether to write into an Excel.
+        :return: No return, directly to calculate the portfolio performance.
+        '''
         close = self.close
         col_dict = {
             "IPI": TTM_indicator_calculation.ipi_cols.value,
@@ -551,9 +580,10 @@ class DataCleaningPro(FileManagement):
             "predict": TTM_indicator_calculation.predict_cols.value
         }
 
-        write = ExcelWriter("result.xlsx")
-        idx_ind_score = []
+        idx_ind_score = {}
+        financial_data = []
         for s in self.cate:
+            idx_ind_subscore = []
             data = self.buy_sell_signal[s]
 
             industry = list(data['industry'])
@@ -561,9 +591,7 @@ class DataCleaningPro(FileManagement):
             col = col_dict[s]
 
             # To calculate each indicators one by one
-            indicatorRes = {}
             for c in col:
-                indRes = {}
                 indScore = []
                 for i in industry:
                     subdf = data[["industry", "ym", c + "_buy", c + "_sell"]][data['industry']==i]
@@ -574,11 +602,10 @@ class DataCleaningPro(FileManagement):
                     tmp = buySig - sellSig
                     buyrec, sellrec, pos = 0, 0, 0
                     tradeSig = []
-                    for e, t in enumerate(tmp):
+                    for t in tmp:
                         if buyrec==0 and sellrec==0 and t > 0:
                             tradeSig.append(1)
                             buyrec = 1
-                            pos = e
                         elif buyrec==1 and sellrec==0 and t < 0:
                             tradeSig.append(-1)
                             buyrec = 0
@@ -587,104 +614,446 @@ class DataCleaningPro(FileManagement):
                             tradeSig.append(1)
                             buyrec = 1
                             sellrec = 0
-                            pos = e
+                        elif buyrec==1 and sellrec==0 and t >= 0:
+                            tradeSig.append(1)
                         else:
                             tradeSig.append(0)
-                    if sum(tradeSig) != 0: tradeSig[pos] = 0
                     subdf.insert(4, c, tradeSig)
                     subclose = close[close["industry"]==i].T.reset_index().iloc[1:, :]
                     subclose.columns = ["ym", c + "_close"]
                     subdf = pd.merge(subdf[["industry", "ym", c]], subclose, on="ym", how="inner")
-                    # Long give money out, Short get money back
-                    subdf[c+'_res'] = subdf.apply(lambda x: round(x[c] * x[c + "_close"] * (-1), 2), axis=1)
+                    subdf[s+c+'_res'] = subdf.apply(lambda x: np.abs(x[c] * x[c + "_close"]), axis=1)
+                    subdf = subdf.rename(columns={c: s+c})
 
-                    tradeRec = subdf[c+'_res']
-                    datelist = subdf['ym']
-                    closeP = subdf[c+'_close']
-                    rf = np.array([self.libor[i] for i in self.libor]).mean()
-                    indRes[i] = self.performance_calcul(tradeRec, datelist, closeP, rf)
-                    indScore.append(subdf[['industry', 'ym', c]])
+                    indScore.append(subdf[['industry', 'ym', s+c, s+c+'_res']])
 
-                indRes = pd.DataFrame(indRes)
-                # Aggregate all the ratios and average them to get a ratio table represents the performance of each indicator.
-                indRes['avg'] = indRes.apply(lambda x: np.nanmean(x), axis=1)
-                indicatorRes[c] = list(indRes['avg'])
+                indScore = pd.concat(indScore).set_index(['industry', 'ym']).fillna(0)
+                idx_ind_subscore.append(indScore)
 
-                indScore = pd.concat(indScore).set_index(['industry', 'ym'])
-                idx_ind_score.append(indScore)
+            if s == "predict":
+                idx_ind_score["predict"] = pd.concat(idx_ind_subscore, axis=1).reset_index()
+            else:
+                financial_data.append(pd.concat(idx_ind_subscore, axis=1))
 
-            indicatorRes = pd.DataFrame(indicatorRes).T.reset_index()
-            indicatorRes.columns = ['indicator', 'AnnualProfRate', 'AnnualVol', 'SharpeRatio', 'MaxDrawdown', 'WinLossRatio']
-            indicatorRes.to_excel(write, s, index=False)
-        if writeExcel: write.save()
+        idx_ind_score["financial"] = pd.concat(financial_data, axis=1).reset_index()
+        if writeExcel:
+            write = ExcelWriter("industry_score.xlsx")
+            for k in ['predict', 'financial']:
+                idx_ind_score[k].to_excel(write, k, index=False)
+                self.portfolio_performance(idx_ind_score[k], "portfolio_" + k, k, writeExcel)
+            write.save()
+        else:
+            for k in ['predict', 'financial']:
+                self.portfolio_performance(idx_ind_score[k], "portfolio_" + k, k, writeExcel)
 
-        idx_ind_score = pd.concat(idx_ind_score, axis=1)
-        idx_ind_score = idx_ind_score.reset_index()
-        write = ExcelWriter("industry_score.xlsx")
-        for dt in set(list(idx_ind_score['ym'])):
-            idx_ind_score.to_excel(write, dt, index=False)
+
+    def portfolio_performance(self, data, excelName, dataCate, writeExcel=False):
+        '''
+        To calculate the value of the portfolio. Assume each industry accounts for a unit value.
+        :param data: The long/short and close price data.
+        :param excelName: The excel name of the stored portfolio value time series data.
+        :param dataCate: The category of data, either 'predict' or 'financial'.
+        :return: No return, stored the calculated portfolio value dataframe.
+        '''
+        allCols = list(data.columns.values)
+        cols = allCols[:2] + [i for i in allCols[2:] if '_res' in i]
+        idxcols = [i for i in allCols[2:] if '_res' not in i]
+        industry = list(set(list(data['industry'])))
+        industry.sort()
+        df = []
+        for i in industry:
+            subdf = data[data['industry']==i]
+
+            # The "cols" is indicators, the rows are dates' value
+            for l, c in enumerate(cols[2:]):
+                pos = cols.index(c)
+                price = list(subdf[c])
+                idx = list(subdf[idxcols[l]])
+                val = []
+                long = 0 # The amount of stocks hold
+                pval = 1 # Current portfolio value
+                rival = 1 # Raw investment portfolio value
+                diff = 0
+                for e, p in enumerate(price):
+                    if int(idx[e]) >= 0 and float(p) > 0:
+                        if long == 0 and idx[e] > 0:
+                            long = rival / p # Assume all of the money can change into stocks, not rests
+                            pval = rival + diff
+                        else:
+                            pval = long * p + diff
+                    elif int(idx[e]) == -1:
+                        pval = long * p + diff
+                        long = 0
+                        diff = pval - rival
+                        rival = 1
+                    val.append(pval)
+                subdf.insert(pos, c + "_val", val)
+
+            df.append(subdf)
+        df = pd.concat(df)
+        self.portfolio[dataCate] = df
+
+        if writeExcel:
+            write = ExcelWriter(excelName + ".xlsx")
+            df.to_excel(write, "data", index=False)
+            write.save()
+
+
+    def performance_calcul(self, data, dataCate=None, plotReq=False, startDate="2009-03", endDate="2020-09"):
+        '''
+        To calculate the performance of the portfoilo.
+        :param data: The value of the portfolio.
+        :param dataCate: The kind of data, financial indicators or predicted ones.
+        :param plotReq: Whether to plot a picture and store it.
+        :param startDate: The start date of the observation.
+        :param endDate: The end date of the observation.
+        :return: No return, the performance of the portfolio.
+        '''
+        Cols = [i for i in data.columns.values if "_res_val" in i]
+        rawCapital = len(data['industry'].drop_duplicates())
+
+        datePeriod = self.datetime_func(startDate, endDate)
+        subdf = []
+        for i in datePeriod:
+            subdf.append(data[data['ym']==i])
+        data = pd.concat(subdf)
+
+        df = []
+        for c in Cols:
+            subdata = data[['ym', c]]
+            subdata = subdata.groupby(['ym']).sum()
+            df.append(subdata)
+        df = pd.concat(df, axis=1)
+
+        # Portfolio performance plot
+        if plotReq:
+            dt = list(df.index)
+            dt.sort()
+            fig = plt.figure(figsize=(20, 12))
+            ax = fig.add_subplot(title="{} indicators portfolio performance".format(dataCate))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+            for e, c in enumerate(Cols):
+                ax.axis = c
+                if len(dt) > 4 * 10:
+                    ax.xaxis.set_major_locator(ticker.MultipleLocator(3))
+                ax.plot(dt, np.array(df[c]), label=c)
+            ax.legend(loc='best', frameon=False)
+            plt.savefig("{} portfolio performance.png".format(dataCate))
+
+        # Portfolio return indicators calculation
+        newCols = []
+        for e, c in enumerate(Cols):
+            df[c[:-8] + "_returnRate"] = df.apply(lambda x: (x[c] - rawCapital) / rawCapital, axis=1)
+            newCols.append(c[:-8] + "_returnRate")
+        newdf = df[newCols].T
+        newdf = self.performance_5_scores(newdf, df, Cols)
+
+        resDF = newdf[['AnnRR', 'SigRR', 'SharpR', 'WLR', 'MDD']]
+        print("resDF:\n", resDF)
+
+        if dataCate: self.indicator_performance[dataCate] = newdf
+
+    def performance_5_scores(self, newdf, portfolioValDF, portfolioValCols):
+        '''
+        To calculate the five scores of the portfolio.
+        :param self:
+        :param newdf: The dataframe that indicates the return rate of the portfolio in every period.
+        :param portfolioValDF: The portfolio value of all the indicators in a period of time.
+                               The columns are the indicators. The indexes are the industry and the date.
+        :param portfolioValCols: The indicators that used to construct the portfolio.
+        :return: The calculated dataframe with the performance result of the portfolio within a period of time.
+        '''
+        dateCols = newdf.columns.values
+        datediff = int(dateCols[1][-2:]) - int(dateCols[0][-2:])
+
+        # 1. Annual Rate of Return
+        for e, d in enumerate(dateCols):
+            # Annualize the return in each period. The first period does not count.????
+            if e != 0:
+                newdf[d+"_RR"] = newdf[d].apply(lambda x: x * (12 / datediff) / (int(e / (12 / datediff)) + 1))
+        newdf["AnnRR"] = newdf.iloc[:, -1] # Calculated according to the last trading date's portfolio value.
+
+        # 2. Annual Rate of Volatility
+        newdf["AvgRR"] = newdf.iloc[:, 1:-1].apply(lambda x: np.mean(x), axis=1)
+
+        SigCols = []
+        RRCols = []
+        for d in dateCols[1:]:  # The first period has zero return rate
+            newdf["ER_" + d] = newdf.apply(lambda x: x[d] - x["AvgRR"], axis=1)
+            RRCols.append("ER_" + d)
+            SigCols.append("SigR_" + d)
+            if len(SigCols) > 1:
+                newdf["SigR_" + d] = newdf.apply(lambda x: np.sqrt(sum(np.square(x[RRCols])) / (len(SigCols) - 1)),
+                                                 axis=1)
+        SigCols.pop(0)
+        newdf["SigRR"] = newdf[SigCols].apply(lambda x: np.sqrt(np.nansum(x) / (len(SigCols) - 1)),
+                                              axis=1)  # The first period is not included inside
+        # 3. Sharpe Ratio
+        ShpCols = []
+        for d in dateCols[3:]:
+            rf = self.libor[d[:4]]
+            newdf['SharpR_' + d] = newdf.apply(lambda x: (x[d] - rf) / x["SigR_" + d], axis=1)
+            ShpCols.append('SharpR_' + d)
+        newdf["SharpR"] = newdf[ShpCols].apply(lambda x: np.mean(x), axis=1)
+        # 4. Win Loss Ratio
+        WLRCols = []
+        for d in dateCols[1:]:
+            newdf["WLR_" + d] = newdf.apply(lambda x: 1 if x[d] > 0 else 0, axis=1)
+            WLRCols.append("WLR_" + d)
+        newdf["WLR"] = newdf.apply(lambda x: sum(x[WLRCols]) / len(WLRCols), axis=1)
+        # 5. Max Drawdown
+        maxP = portfolioValDF[portfolioValCols].T.cummax(axis=1)
+        mdd = []
+        for i in range(len(maxP)):
+            cummaxP = np.array(maxP.iloc[i, :])
+            rawP = np.array(portfolioValDF[portfolioValCols].T.iloc[i, :])
+            maxDrawDown = rawP / cummaxP - 1
+            mdd.append(maxDrawDown)
+        mdd = pd.DataFrame(mdd)
+        mddCols = ["MDD_" + i for i in dateCols]
+        mdd.columns = mddCols
+        newdf = newdf.reset_index()
+        newdf = pd.merge(newdf, mdd, left_index=True, right_index=True)
+        newdf['MDD'] = newdf[mddCols].apply(lambda x: min(x), axis=1)
+        newdf = newdf.set_index("index").sort_values(by="AnnRR", ascending=False)
+        return newdf
+
+    def check_correlation_vars(self):
+        '''
+        Check the correlation of the dataset.
+        :return: No return, store the correlation of the dataset, get ready for the selection of the indicators.
+        '''
+        rawdata = []
+        for s in ['financial', 'predict']:
+            df = self.indicator_performance[s]
+            rawdata.append(df)
+        rawdata = pd.concat(rawdata, sort=False)
+        ERCols = [i for i in rawdata.columns.values if "ER_" in i]
+        ERCols.sort()
+        data = rawdata[["AnnRR"] + ERCols].sort_values(by="AnnRR", ascending=False)
+
+        # Suppliment the missing data -> financial indicators
+        newdata = []
+        tobedelete = 0
+        trigger = True
+        for i in range(len(data)):
+            line = data.iloc[i, 1:]
+            newline = [line[0]]
+            former = line[0]
+            for l in line[1:]:
+                if np.isnan(l):
+                    newline.append(former)
+                    if np.isnan(former) and trigger: tobedelete += 1
+                else:
+                    newline.append(l)
+                    former = l
+            newdata.append(pd.DataFrame(newline).T)
+            if list(data.index)[i][:7] != "predict": trigger = False
+        newdata = pd.concat(newdata)
+        newdata.index = data.index
+        newdata.columns = ERCols
+        newdata = newdata.iloc[:, tobedelete:].T
+
+        corrDf = newdata.corr()
+        corrInfo = []
+        for e, i in enumerate(corrDf.columns.values):
+            arr = np.mean(list(corrDf[i])[:e] + list(corrDf[i])[e:])
+            corrInfo.append(round(float(arr), 2))
+        corrInfo = pd.DataFrame(corrInfo)
+        corrInfo.set_index(keys=corrDf.columns.values, inplace=True)
+        corrInfo.columns = ["corrInfo"]
+        self.indicator_picker = pd.merge(rawdata[['AnnRR', 'SigRR', 'SharpR', 'WLR', 'MDD']], corrInfo,
+                                    left_index=True, right_index=True).sort_values(by="AnnRR", ascending=False)
+
+    def select_indicators(self, minimunThres):
+        '''
+        Select the indicators that used to take part in the complex indicators.
+        :param minimunThres: The minimum threshold of the filter standard.
+        :return: Filtered dataset.
+        '''
+        data = self.indicator_picker
+        data = data[(data['corrInfo'] <= 0.9) & (data['AnnRR'] > min(minimunThres, np.mean(data['AnnRR'])))]
+        self.indicator_picker = [i.split("_")[0] for i in list(data.index)]
+
+    def complex_indicator_rawLS(self):
+        '''
+        To combine the indicator data together and suppliment the missing data.
+        Filter the variables of the dataframe.
+        :return: A filtered variable dataframe and the raw data of the filtered variables without missing value.
+        '''
+        data = []
+        for s in self.cate:
+            df = self.buy_sell_signal[s].set_index(["industry", "ym"])
+            longCols = [i for i in df.columns.values if "_buy" in i]
+            shortCols = [i for i in df.columns.values if "_sell" in i]
+            dfCols = [s + i[:-4] for i in df.columns.values if "_buy" in i]
+            df[shortCols] = df[shortCols].apply(lambda x: x * (-1), axis=1)
+            for e, c in enumerate(dfCols):
+                df[c] = df.apply(lambda x: x[longCols[e]] + x[shortCols[e]], axis=1)
+                del df[longCols[e]]
+                del df[shortCols[e]]
+            data.append(df)
+        data = pd.concat(data, axis=1, sort=False).reset_index()
+
+        # Suppliment the nan data
+        industry = list(set(list(data['industry'])))
+        dataCols = data.columns.values
+        newdata = []
+        for i in industry:
+            newsubdf = data.iloc[:, :2][data['industry']==i].reset_index(drop=True) # Get the "industry" and "ym" columns
+            subdf = data[data['industry']==i]
+            updateData = []
+            predictCols = []
+            cols = []
+            tobedelete = 0
+            trigger = True
+            for c in dataCols:
+                if c[:3]=="IPI" or c[:3]=="PPI":
+                    cols.append(c)
+                    line = list(subdf[c])
+                    former = line[0]
+                    newline = []
+                    for l in line:
+                        if np.isnan(l):
+                            newline.append(former)
+                            if np.isnan(former) and trigger: tobedelete += 1
+                        else:
+                            former = l
+                            newline.append(l)
+                            trigger = False
+                    newline = newline[tobedelete:]
+                    updateData.append(newline)
+                else:
+                    predictCols.append(c)
+            updateData = pd.DataFrame(updateData).T
+            updateData.columns = cols
+            updateData.index = [i for i in range(tobedelete, len(newsubdf))]
+            newsubdf = pd.merge(newsubdf, updateData, left_index=True, right_index=True)
+            predDF = subdf[predictCols].iloc[tobedelete:, :]
+            newsubdf = pd.merge(newsubdf, predDF, on=['industry', 'ym'], how='inner')
+            newdata.append(newsubdf)
+
+        newdata = pd.concat(newdata, sort=False).reset_index(drop=True)
+        # Select indicators to take part in the complex indicator
+        newdata = newdata[['industry', 'ym'] + self.indicator_picker]
+
+        self.complex_rawdata = newdata
+
+    def complex_indicator(self):
+        '''
+        TO form a dataframe of the complex indicators.
+        :return: The dataframe that used to decide which industry to invest in.
+        '''
+        data = self.complex_rawdata
+        data['complexIDX'] = data.iloc[:, 2:].apply(lambda x: sum(x), axis=1)
+        data = data[["industry", "ym", "complexIDX"]].set_index(["industry", "ym"])
+
+        self.complex_ind = data.unstack(level=-1)['complexIDX']
+
+        write = ExcelWriter("complex_indicators.xlsx")
+        self.complex_ind.to_excel(write, "data")
         write.save()
 
-    def performance_calcul(self, tradeRec, datelist, close, rf):
+    def complex_ind_performance(self, thres, startDate, endDate, excelwriter=None):
         '''
-        To calculate the performance of the portfolio.
-        :param tradeRec: The trading record of the transactions, should be in array, pd.Series, or list format.
-                         Just shows the amount of money of the long and short, long position is negative, short position is positive.
-        :param datelist: The datelist of the transaction date. It is full amount data, including all of the transaction date.
-        :param close: The close price of the transactions. Used to calculate the max drawdown.
-        :param rf: The risk free rate of the market, recorded by year, by using LIBOR.
-        :return:
+        The calculation of the portfolio performance by using complex indicator.
+        :param thres: The threshold used to judge long short signals. Ranges from (0, 0.5).
+        :param startDate: The start date of the calculation. "yyyy-mm" format.
+        :param endDate: The end date of the calculation. "yyyy-mm" format.
+        :return: The performance of the Portfolio by using the complex indicator.
         '''
-        trade = np.array(tradeRec) != 0
-        tradeDate = np.array(datelist)[trade]
-        tradeRec = np.array(tradeRec)[trade]
-        i = 0
-        Prof = {"annualProf": [], "win": 0, "trade": 0}
-        while i < len(tradeDate):
-            longDate = datetime.strptime(tradeDate[i], "%Y-%m")
-            shortDate = datetime.strptime(tradeDate[i + 1], "%Y-%m")
-            DateDelta = shortDate - longDate
-            annualProf = (tradeRec[i + 1] + tradeRec[i]) * 365.0 / (np.abs(tradeRec[i]) * DateDelta.days)
-            Prof['annualProf'].append(annualProf)
-            if tradeRec[i + 1] > np.abs(tradeRec[i]): Prof['win'] += 1
-            Prof['trade'] += 1
-            i += 2
+        dateCols = self.datetime_func(startDate, endDate)
+        ind_close = self.close.set_index('industry')
+        ind_close = ind_close[dateCols]
+        data = self.complex_ind[dateCols]
 
-        if len(Prof['annualProf'])==0: return [np.NaN] * 5
-        # 1. Annual Rate of Return
-        annualProfMean = round(sum(Prof['annualProf']) / len(Prof['annualProf']), 3)
-        # 2. Annual Rate of Volatility
-        profU = sum(np.square(np.array(Prof['annualProf']) - annualProfMean)) / (len(Prof['annualProf']) - 1) if len(Prof['annualProf']) > 1 else np.NaN
-        yearVol = round(np.sqrt(profU), 3) if len(Prof['annualProf']) > 1 else np.NaN
-        # 3. Sharpe Ratio
-        SharpeR = (annualProfMean - rf) / yearVol if len(Prof['annualProf']) > 1 else np.NaN
-        # 4. Win Loss Ratio
-        wlr = round(Prof['win'] * 1.0 / Prof['trade'], 3)
-        # 5. Max Drawdown
-        rec = False
-        closeTradeP = []
-        ind = 1
-        closeWin = []
-        for e, i in enumerate(trade):
-            if i: ind += 1
-            if (i or rec) and ind % 2 == 0:
-                closeTradeP.append(close[e])
-                rec = True
-            elif i and rec and ind % 2 == 1:
-                closeTradeP.append(close[e])
-                rec = False
-                closeWin.append(closeTradeP)
-                closeTradeP = []
-        maxDB = []
-        for i in closeWin:
-            data = pd.Series(i)
-            rollMax = data.cummax()
-            drawdown = np.array(data) / np.array(rollMax) - 1
-            maxDB.append(round(min(drawdown), 3))
-        res = [annualProfMean, yearVol, SharpeR, min(maxDB), wlr]
-        return res
+        scaler = MinMaxScaler()
+        cols = data.columns.values
+        for c in cols:
+            arr = np.array(data[c]).reshape(-1, 1)
+            arr = scaler.fit_transform(arr)
+            del data[c]
+            data.insert(0, c, arr)
+            # Decide which industry to invest and which to quit
+            data[c] = data[c].apply(lambda x: -1 if x <= 0.5 + thres else x)
+            data[c] = data[c].apply(lambda x: 1 if x >= 0.5 + thres else x)
 
-    def run_dataClean(self):
+        # # Portfolio value
+        # 1. Trading Signal
+        rows = list(data.index)
+        dataSig = []
+        for r in rows:
+            line = list(data.loc[r])
+            signal = []
+            trading = False
+            for l in line:
+                if l == 1:
+                    signal.append(1)
+                    trading = True
+                elif l == -1 and trading:
+                    signal.append(1)
+                    trading = False
+                elif trading:
+                    signal.append(1)
+                else:
+                    signal.append(0)
+            dataSig.append(signal)
+        dataSig = pd.DataFrame(dataSig, index=rows, columns=cols)
+
+        # 2. Value
+        PortfolioVal = []
+        for r in rows:
+            line = list(ind_close.loc[r])
+            sig = list(dataSig.loc[r])
+            val = []
+            rawVal = 0
+            for n in range(len(line)):
+                signal, price = sig[n], line[n]
+                if (signal == 1 and n==0) or (rawVal == 0 and signal == 1):
+                    val.append(1)
+                    rawVal = price
+                elif signal == 1:
+                    # Assume the raw investment in each industry is 1 unit.
+                    val.append(price / rawVal)
+                elif signal == 0 and n==0:
+                    val.append(1)
+                else:
+                    val.append(val[-1])
+            PortfolioVal.append(val)
+        PortfolioVal = pd.DataFrame(PortfolioVal, columns=cols, index=rows).unstack().reset_index()
+        PortfolioVal.columns = ['ym', 'industry', 'complex']
+
+        write = ExcelWriter("PortfolioVal.xlsx")
+        PortfolioVal.to_excel(write, "data")
+        write.save()
+
+        # # Portfolio performance
+        rawCapital = len(PortfolioVal['industry'].drop_duplicates())
+        PortfolioVal = PortfolioVal.groupby('ym').sum()
+
+        PortfolioVal['complex_returnRate'] = PortfolioVal.apply(lambda x: (x - rawCapital) / rawCapital, axis=1)
+        newdf = pd.DataFrame(PortfolioVal['complex_returnRate']).T
+        newdfCols = newdf.columns.values
+
+        res = self.performance_5_scores(newdf, PortfolioVal, ['complex'])
+        print("complex indicators performance:\n", res[['AnnRR', 'SigRR', 'SharpR', 'WLR', 'MDD']])
+        years = list(set([i.split("-")[0] for i in newdfCols]))
+        months = list(set([i.split("-")[1] for i in newdfCols]))
+        years.sort()
+        months.sort()
+        data = []
+        for i in years:
+            line = []
+            for j in newdfCols:
+                if j.split("-")[0]==i:
+                    line.append(newdf[j].values[0])
+            data.append(line)
+        data = pd.DataFrame(data, columns=months, index=years)
+
+        data.to_excel(excelwriter, startDate[:4])
+
+
+    def run_dataClean(self, startDate, endDate):
         self.IPI_data_calcul()
         self.IPI_nan_deal()
         self.PPI_data_calcul()
@@ -696,5 +1065,17 @@ class DataCleaningPro(FileManagement):
         self.industry_indicators()
 
         self.buysell_indicator(0.1)
-        self.single_buysell_perf(True)
+        self.single_buysell_perf()
 
+        for c in ['predict', 'financial']:
+            data = self.portfolio[c]
+            self.performance_calcul(data, c, True, "2016-01", "2020-09")
+
+        self.check_correlation_vars()
+        self.select_indicators(0.05)
+        self.complex_indicator_rawLS()
+        self.complex_indicator()
+
+        write = ExcelWriter("final_result.xlsx")
+        self.complex_ind_performance(0.1, startDate, endDate, write)
+        write.save()
