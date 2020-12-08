@@ -751,6 +751,10 @@ class DataCleaningPro(FileManagement):
         resDF = newdf[['AnnRR', 'SigRR', 'SharpR', 'WLR', 'MDD']]
         print("resDF:\n", resDF)
 
+        write = ExcelWriter(dataCate + "_performance.xlsx")
+        resDF.to_excel(write, "data")
+        write.save()
+
         if dataCate: self.indicator_performance[dataCate] = newdf
 
     def performance_5_scores(self, newdf, portfolioValDF, portfolioValCols):
